@@ -1,0 +1,41 @@
+# Python cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Môi trường Python
+.venv/
+venv/
+env/
+
+# Thông tin riêng tư
+.env
+.env.*
+!.env.example
+.aws/
+
+# Cấu hình editor cá nhân
+.vscode/
+.idea/
+.cursor/
+
+# Dữ liệu ảnh, video và kết quả xử lý
+/data/
+/image/
+/output/
+/res.json
+/runs/
+*.log
+
+# Trọng số model và model đã export
+*.pt
+*.pth
+*.onnx
+*.engine
+*.plan
+
+# File hệ điều hành
+Thumbs.db
+.DS_Store
+/tests/
