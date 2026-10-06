@@ -14,6 +14,8 @@ class FrameReader(threading.Thread):
             raise FileNotFoundError(f"Không mở được video: {video_path}")
         self.frame_queue = frame_queue
         self._halt = threading.Event()
+        self.error = None
+        self.frames_read = 0
 
         self.fps = self.cap.get(cv2.CAP_PROP_FPS)
         if self.fps <= 0 or self.fps > 240:
@@ -30,6 +32,7 @@ class FrameReader(threading.Thread):
                     break
 
                 frame_nmr += 1
+                self.frames_read = frame_nmr + 1
                 if not self._put((frame_nmr, frame)):
                     break
 
@@ -40,6 +43,8 @@ class FrameReader(threading.Thread):
                         break
                 else:
                     next_frame_time = time.time()
+        except Exception as exc:
+            self.error = exc
         finally:
             self._put(None)
             self.cap.release()

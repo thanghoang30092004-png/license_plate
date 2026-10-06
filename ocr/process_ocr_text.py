@@ -1,6 +1,4 @@
 import re
-
-
 class PlateFormatter:
     """
     Format text biển số về chuẩn Việt Nam, và correction các ký tự
@@ -34,22 +32,31 @@ class PlateFormatter:
     # Biển số VN không dùng I, J, O, Q, W cho series vì dễ lẫn với chữ số
     SERIES_LETTERS = "ABCDEFGHKLMNPRSTUVXYZ"
 
-    FORMATTED_PATTERN = (
-        r'^\d{2}[' + SERIES_LETTERS + r']{1,2}\d?\-(\d{4}|\d{3}\.\d{2})$'
-    )
+    def __init__(self):
+        # Compile sẵn 1 lần lúc khởi tạo, tránh parse lại regex mỗi lần
+        # gọi format() — hàm này chạy cho mọi track mỗi frame trong
+        # pipeline real-time nên cần tránh overhead lặp lại không cần thiết.
+        pattern = r'^\d{2}[' + self.SERIES_LETTERS + r']{1,2}\d?\-(\d{4}|\d{3}\.\d{2})$'
+        self._formatted_regex = re.compile(pattern)
 
     def format(self, text):
         """
         Cleans and formats license plate text to standard Vietnamese format.
         Example: 51G10096 -> 51G-100.96
-        Trả về text đã clean (chưa format) nếu không khớp layout biển số nào.
+        Trả về text đã clean (chưa format) nếu không khớp layout biển số nào,
+        trả về "" nếu input rỗng/None.
         """
+        if not text:
+            return ""
+
         text = re.sub(r'[^A-Z0-9\-\.]', '', text.upper())
 
-        if re.match(self.FORMATTED_PATTERN, text):
+        if self._formatted_regex.match(text):
             return text
 
         raw = re.sub(r'[\-\.]', '', text)
+        if not raw:
+            return text
 
         # Chọn layout cần ít lần sửa ký tự nhất -> ưu tiên cách đọc sát OCR nhất
         best = None
@@ -66,6 +73,20 @@ class PlateFormatter:
         if best is None:
             return text
         return self._build_formatted(*best)
+
+    def format_lines(self, lines):
+        """Join OCR lines, putting a numeric suffix after the plate prefix."""
+        parts = [str(line).strip() for line in lines if line]
+        if len(parts) == 2 and re.fullmatch(r'[\d\s.\-]+', parts[0]):
+            if re.search(r'[A-Z]', parts[1].upper()):
+                parts.reverse()
+        if len(parts) == 2:
+            prefix = re.sub(r'[^A-Z0-9]', '', parts[0].upper())
+            numbers = re.sub(r'[^0-9]', '', parts[1])
+            if re.fullmatch(r'\d{2}[' + self.SERIES_LETTERS + r']{1,2}\d?', prefix):
+                if re.fullmatch(r'\d{4,5}', numbers):
+                    return self._build_formatted(prefix[:2], prefix[2:], numbers)
+        return self.format(''.join(parts))
 
     def _coerce_to_layout(self, raw, layout):
         """
@@ -113,4 +134,6 @@ class PlateFormatter:
 
     def is_valid(self, text):
         """True nếu text là biển số đã format đúng chuẩn."""
-        return re.match(self.FORMATTED_PATTERN, text) is not None
+        if not text:
+            return False
+        return self._formatted_regex.match(text) is not None

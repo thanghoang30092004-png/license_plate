@@ -8,12 +8,13 @@ import yaml
 from detector.detection import VehicleDetection
 from detector.plate_detector import PlateDetector
 from tracking.deepsort_tracker import VehicleTracker
-from ocr.paddle_ocr_engine import PlateOcr
+from ocr.paddle_ocr_engine import PlateOCR
 from tracking.track_cache import TrackCache
 from utils.visualization import draw_results
 from capture.frame_reader import FrameReader
 from pipeline.inference_worker import InferenceWorker
-
+from utils.video_writer import TimelineVideoWriter
+from utils.snapshot_saver import SnapshotSaver
 
 def load_config(config_path=r"D:\license_plate_data\config\config.yaml"):
     with open(config_path, "r", encoding="utf-8") as f:
@@ -30,12 +31,20 @@ def _project_path(config_path, path):
 
 def _write_frame_log(log_file, frame_nmr, frame_results):
     timing = frame_results.get("__timing__") or {}
+    ocr_ran = timing.get('ocr_ran')
+    ocr_ms = timing.get('ocr')
+    if ocr_ran is False:
+        ocr_timing = "ocr skipped"
+    elif ocr_ms is None:
+        ocr_timing = "ocr n/a"
+    else:
+        ocr_timing = f"ocr {ocr_ms:.3f} ms"
     timing_text = (
-        f"xe {timing.get('xe', 0):.0f} ms | "
-        f"bien {timing.get('bien', 0):.0f} ms | "
-        f"track {timing.get('track', 0):.0f} ms | "
-        f"ocr {timing.get('ocr', 0):.0f} ms | "
-        f"tong {timing.get('tong', 0):.0f} ms"
+        f"xe {timing.get('xe', 0):.3f} ms | "
+        f"bien {timing.get('bien', 0):.3f} ms | "
+        f"track {timing.get('track', 0):.3f} ms | "
+        f"{ocr_timing} | ocr_crops={timing.get('ocr_crops', 'n/a')} | "
+        f"tong {timing.get('tong', 0):.3f} ms"
     )
     parts = []
     for track_id, row in frame_results.items():
@@ -54,10 +63,38 @@ def _write_frame_log(log_file, frame_nmr, frame_results):
     log_file.flush()
 
 
+def _write_ocr_summary(log_file, worker):
+    calls = worker.ocr_call_count
+    mean_ms = worker.ocr_total_ms / calls if calls else 0.0
+    # Worker counters also include frames discarded by the result queue.
+    log_file.write(
+        f"summary | ocr_calls={calls} | ocr_crops={worker.ocr_crop_count} | "
+        f"ocr_total={worker.ocr_total_ms:.3f} ms | "
+        f"ocr_mean_per_call={mean_ms:.3f} ms | "
+        f"ocr_max_per_call={worker.ocr_max_ms:.3f} ms\n")
+    log_file.flush()
 
-def main():
-    config_path = r"D:\license_plate_data\config\config.yaml"
+
+
+
+def main(config_path=r"D:\license_plate_data\config\config.yaml", display=None):
     cfg = load_config(config_path)
+    gui_available = any(
+        line.strip().startswith('GUI:') and 'NONE' not in line
+        for line in cv2.getBuildInformation().splitlines())
+    if display is None:
+        display = cfg['video'].get('display', 'auto')
+    if display == 'auto':
+        display = gui_available
+    elif not isinstance(display, bool):
+        raise ValueError("video.display must be true, false, or 'auto'")
+    if display and not gui_available:
+        raise RuntimeError("OpenCV has no GUI support; use --no-display or video.display: false")
+    if not display:
+        print("Headless mode: processing video without an OpenCV window.")
+    def on_snapshot_saved(track_id, filepath):
+        track_cache.mark_snapshot_saved(track_id)
+
 
     vehicle_detector = VehicleDetection(
         model_path=_project_path(config_path, cfg['models']['vehicle_detector']),
@@ -74,16 +111,22 @@ def main():
         n_init=cfg['tracking']['n_init'],
         embedder=cfg['tracking']['embedder'])
     
-    ocr_engine = PlateOcr(min_confidence=cfg['ocr']['min_confidence'],
-                    batch_size=cfg['ocr']['batch_size'],
-                    use_gpu=cfg['ocr']['use_gpu'])
-    
+    ocr_engine = PlateOCR(
+        onnx_model_path=_project_path(config_path, cfg['ocr']['onnx_model_path']),
+        plate_config_path=_project_path(config_path, cfg['ocr']['plate_config_path']),
+        min_confidence=cfg['ocr']['min_confidence'],
+        max_batch_cap=cfg['ocr']['max_batch_cap'],
+        use_gpu=cfg['ocr'].get('use_gpu', True),
+        )
     track_cache = TrackCache(
             min_frames_to_confirm=cfg['cache']['min_frames_to_confirm'],
             recheck_interval_found=cfg['cache']['recheck_interval_found'],
             recheck_interval_missing=cfg['cache']['recheck_interval_missing']
         )
-
+    snapshot_writer = SnapshotSaver(
+        output_dir = cfg['snapshot']['output_dir'],
+        on_saved = on_snapshot_saved
+    )
     frame_queue = queue.Queue(maxsize=int(cfg['queue']['frame_queue_size']))
     result_queue = queue.Queue(maxsize=int(cfg['queue']['result_queue_size']))
 
@@ -100,55 +143,92 @@ def main():
         plate_detector=plate_detector,
         tracker=tracker,
         ocr_engine=ocr_engine,
-        track_cache=track_cache)
+        track_cache=track_cache,
+        snapshot_writer=snapshot_writer)
     
     output_path = _project_path(
         config_path, cfg['video'].get('output', 'output/anpr_output.mp4'))
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     log_path = os.path.splitext(output_path)[0] + ".log"
 
-    reader.start()
-    worker.start()
-
-    results = {}
     writer = None
-    log_file = open(log_path, "w", encoding="utf-8")
+    processed_frames = 0
+    reached_end = False
+    log_file = None
     try:
+        log_file = open(log_path, "w", encoding="utf-8")
+        snapshot_writer.start()
+        reader.start()
+        worker.start()
         while True:
-            item = result_queue.get()
+            try:
+                item = result_queue.get(timeout=0.5)
+            except queue.Empty:
+                if not worker.is_alive():
+                    break
+                continue
             if item is None:
-                print("Stopping...")
+                reached_end = True
                 break
 
             frame_nmr, frame, frame_results = item
-            results[frame_nmr] = frame_results
+            processed_frames += 1
             _write_frame_log(log_file, frame_nmr, frame_results)
             frame = draw_results(frame, frame_results)
             if writer is None:
                 height, width = frame.shape[:2]
-                writer = cv2.VideoWriter(
+                writer = TimelineVideoWriter(
                     output_path,
-                    cv2.VideoWriter_fourcc(*"mp4v"),
                     reader.fps,
                     (width, height),
                 )
-            writer.write(frame)
-            cv2.imshow('ANPR - Real-time simulation', frame)
-
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
+            writer.write(frame_nmr, frame)
+            if display:
+                cv2.imshow('ANPR - Real-time simulation', frame)
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
+        if worker.error is not None:
+            raise RuntimeError("Inference worker failed") from worker.error
+        if reader.error is not None:
+            raise RuntimeError("Video reader failed") from reader.error
+        if writer is None:
+            raise RuntimeError("No video frames were processed")
+        if reached_end:
+            writer.finish(reader.frames_read)
     finally:
         reader.stop()
         worker.stop()
-        reader.join(timeout=2)
-        worker.join(timeout=2)
+        if reader.ident is not None:
+            reader.join(timeout=10)
+        else:
+            reader.cap.release()
+        if worker.ident is not None:
+            worker.join(timeout=10)
+        snapshot_writer.stop()
+        if snapshot_writer.ident is not None:
+            snapshot_writer.join(timeout=10)
         if writer is not None:
             writer.release()
-        log_file.close()
-        cv2.destroyAllWindows()
-    print(f"Đã lưu video: {output_path}")
-    print(f"Đã lưu log: {log_path}")
-    print("Exiting...")
+        if log_file is not None:
+            if not worker.is_alive():
+                _write_ocr_summary(log_file, worker)
+            log_file.close()
+        if display:
+            cv2.destroyAllWindows()
+    if worker.error is not None:
+        raise RuntimeError("Inference worker failed") from worker.error
+    if reader.is_alive() or worker.is_alive() or snapshot_writer.is_alive():
+        raise RuntimeError("Processing threads did not stop within 10 seconds")
+
+    return {"processed_frames": processed_frames, "source_frames": reader.frames_read,
+            "completed": reached_end, "output": output_path, "log": log_path,
+            "ocr_calls": worker.ocr_call_count, "ocr_crops": worker.ocr_crop_count,
+            "ocr_total_ms": worker.ocr_total_ms}
     
 if __name__ == "__main__":
-    main()
+    import argparse
+    parser = argparse.ArgumentParser(description="Run ANPR on a video")
+    parser.add_argument('--config', default=r"D:\license_plate_data\config\config.yaml")
+    parser.add_argument('--no-display', action='store_true')
+    args = parser.parse_args()
+    main(args.config, display=False if args.no_display else None)

@@ -1,5 +1,5 @@
 from deep_sort_realtime.deepsort_tracker import DeepSort
-
+import torch
 
 class VehicleTracker:
     def __init__(self, max_age=30, n_init=3, embedder="mobilenet",
@@ -28,8 +28,9 @@ class VehicleTracker:
             formated_detections.append(([x1, y1, width, height], conf, int(class_id)))
 
         # Vẫn gọi update_tracks khi không có detection để track cũ được age/xoá đúng
-        tracks = self.tracker.update_tracks(formated_detections, frame=frame)
-
+        #tracks = self.tracker.update_tracks(formated_detections, frame=frame)
+        with torch.inference_mode():
+            tracks = self.tracker.update_tracks(formated_detections, frame=frame)
         confirmed_tracks = []
         for track in tracks:
             if not track.is_confirmed() or track.time_since_update > 0:

@@ -43,7 +43,3 @@ def _box_rows(results):
     if boxes is None or len(boxes) == 0:
         return []
     return boxes.data.tolist()
-    
-    
-        
-        

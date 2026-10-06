@@ -32,8 +32,19 @@ class TrackCache:
             'last_checked_frame': current_frame,
             'not_found_count': 0,
             'absent_frames': 0,
+            'snapshot_saved': False,  # đã lưu ảnh snapshot track_id này chưa
         }
 
+
+    def should_save_snapshot(self, track_id):
+        """Quyết định track này có cần lưu ảnh snapshot (ảnh crop biển số) không."""
+        entry = self._cache.get(track_id)
+        if entry is None:
+            return False 
+        return entry['confirmed_text'] is not None and not entry['snapshot_saved']
+
+
+        
     def should_run_ocr(self, track_id, current_frame):
         """Quyết định track này có cần chạy OCR ở frame hiện tại không."""
         if track_id not in self._cache:
@@ -108,6 +119,15 @@ class TrackCache:
 
         entry['candidates'].append(text)
         self._try_confirm(entry)
+
+
+    def mark_snapshot_saved(self, track_id):
+        """Đánh dấu track này đã lưu ảnh snapshot (ảnh crop biển số) rồi."""
+        entry = self._cache.get(track_id)
+        if track_id in self._cache:
+            self._cache[track_id]['snapshot_saved'] = True
+
+
 
     def get_text(self, track_id):
         """Trả về text đã confirm (hoặc None nếu chưa có)."""
