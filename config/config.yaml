@@ -1,25 +1,32 @@
 models:
-  vehicle_detector: "yolo26n.pt"
-  plate_detector: "D:/license_plate_data/model/license_plate_detector (1).pt"
+  vehicle_detector: "D:/license_plate_data/yolo26m.engine"
+  plate_detector: "D:/license_plate_data/model/last.engine"
 
 detection:
   vehicle_conf_threshold: 0.2
-  plate_conf_threshold: 0.1
+  plate_conf_threshold: 0.2
   plate_min_ratio: 0.8
   plate_max_ratio: 5.0
 
 
 tracking:
-  max_age: 30
-  n_init: 3
-  embedder: "mobilenet"
+  type: "bytetrack"
+  track_high_thresh: 0.25
+  track_low_thresh: 0.2
+  new_track_thresh: 0.25
+  track_buffer: 30  # Number of tracker updates, not original video frames
+  match_thresh: 0.8
+  fuse_score: true
+
+snapshot:
+  output_dir: "D:/license_plate_data/output/snapshots"
 
 ocr:
   use_gpu: true
-  min_confidence: 0.4
-  batch_size: 16
-  det_model_path: r"D:\license_plate_data\model\PP-OCRv6_tiny_det.onnx"
-  rec_model_path: r"D:\license_plate_data\model\PP-OCRv6_tiny_rec.onnx"
+  onnx_model_path: "D:/license_plate_data/model/cct_s_v2_global.onnx"
+  plate_config_path: "D:/license_plate_data/model/cct_s_v2_global_plate_config.yaml"
+  min_confidence: 0.9
+  max_batch_cap: 32
 cache:
   min_frames_to_confirm: 3      # số frame vote trước khi khóa kết quả
   recheck_interval_found: 60    # đã có biển ổn định, bao lâu check lại 1 lần
@@ -30,6 +37,6 @@ queue:
   result_queue_size: 5
 
 video:
-  source: "D:/license_plate_data/data/Camera Đọc Biển Số Xe, Giải pháp camera nhìn biển số xe của nhà imou.mp4"
+  source: "D:/license_plate_data/data/Crazy yet Organized Traffic in Vietnam Ho Chi Minh.mp4"
   output: "output/anpr_output.mp4"
   fallback_fps: 30

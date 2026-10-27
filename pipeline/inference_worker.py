@@ -2,19 +2,19 @@ import queue
 import threading
 import time
 
-from tracking.deepsort_tracker import match_plate_to_tracks
-from utils.snapshot_saver import SnapshotSaver
+from tracking.matching import match_plate_to_tracks
 
 class InferenceWorker(threading.Thread):
 
     def __init__(self, frame_queue, result_queue, vehicle_detector,
                  plate_detector, tracker, ocr_engine, track_cache
-                 , snapshot_writer = None):
+                 , snapshot_writer = None, person_tracker=None):
         super().__init__(daemon=True)
         self.frame_queue = frame_queue
         self.result_queue = result_queue
         self.vehicle_detector = vehicle_detector
         self.plate_detector = plate_detector
+        self.person_tracker = person_tracker
         self.tracker = tracker
         self.ocr_engine = ocr_engine
         self.track_cache = track_cache
@@ -48,15 +48,29 @@ class InferenceWorker(threading.Thread):
         started = time.perf_counter()
 
         mark = time.perf_counter()
-        vehicle_detections = self.vehicle_detector.detect(frame)
+        if self.person_tracker is not None:
+            groups = self.vehicle_detector.detect_objects(frame)
+            vehicle_detections = groups["vehicles"]
+            person_detections = groups["persons"]
+        else:
+            vehicle_detections = self.vehicle_detector.detect(frame)
+            person_detections = []
         vehicle_ms = (time.perf_counter() - mark) * 1000
 
         mark = time.perf_counter()
         tracks = self.tracker.update(vehicle_detections, frame)
         track_ms = (time.perf_counter() - mark) * 1000
 
-        active_track_ids = {t.track_id for t in tracks}
-        self.track_cache.cleanup(active_track_ids)
+        mark = time.perf_counter()
+        person_tracks = (self.person_tracker.update(person_detections, frame)
+                         if self.person_tracker is not None else [])
+        person_track_ms = (time.perf_counter() - mark) * 1000
+
+        if hasattr(self.tracker, 'retained_track_ids'):
+            self.track_cache.retain_tracks(self.tracker.retained_track_ids())
+        else:
+            # Compatibility with older/custom trackers that expose visible tracks only.
+            self.track_cache.cleanup({t.track_id for t in tracks})
 
         mark = time.perf_counter()
         plate_detections = self.plate_detector.detect(frame)
@@ -79,13 +93,20 @@ class InferenceWorker(threading.Thread):
                 "source": "cache",
             }
 
+        # A frame contributes at most one OCR vote per vehicle. Duplicate plate
+        # detections must not satisfy min_frames_to_confirm in a single frame.
+        best_plates = {}
         for plate_bbox in plate_detections:
             track = match_plate_to_tracks(plate_bbox, tracks)
             if track is None:
                 continue
             plate_boxes.append(list(plate_bbox[:4]))
             track_id = track.track_id
+            previous = best_plates.get(track_id)
+            if previous is None or plate_bbox[4] > previous[4]:
+                best_plates[track_id] = plate_bbox
 
+        for track_id, plate_bbox in best_plates.items():
             if not self.track_cache.should_run_ocr(track_id, frame_nmr):
                 continue
 
@@ -136,11 +157,16 @@ class InferenceWorker(threading.Thread):
                         self._submit_snapshot(
                             frame, track.to_ltrb(), track_id, confirmed_text, frame_nmr)
 
+        frame_results["__persons__"] = {
+            t.track_id: {"person_bbox": list(t.to_ltrb())}
+            for t in person_tracks
+        }
         frame_results["__plates__"] = plate_boxes
         frame_results["__timing__"] = {
             "xe": vehicle_ms,
             "bien": plate_ms,
             "track": track_ms,
+            "person_track": person_track_ms,
             "ocr": ocr_ms,
             "ocr_ran": bool(crops),
             "ocr_crops": len(crops),

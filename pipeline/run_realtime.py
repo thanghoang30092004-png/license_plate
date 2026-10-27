@@ -5,10 +5,10 @@ import cv2
 import yaml
 
 
-from detector.detection import VehicleDetection
+from detector.detection import ObjectDetector
 from detector.plate_detector import PlateDetector
-from tracking.deepsort_tracker import VehicleTracker
-from ocr.paddle_ocr_engine import PlateOCR
+from tracking.bytetrack_tracker import ObjectTracker
+from ocr.read_ocr_engine import PlateOCR
 from tracking.track_cache import TrackCache
 from utils.visualization import draw_results
 from capture.frame_reader import FrameReader
@@ -40,15 +40,16 @@ def _write_frame_log(log_file, frame_nmr, frame_results):
     else:
         ocr_timing = f"ocr {ocr_ms:.3f} ms"
     timing_text = (
-        f"xe {timing.get('xe', 0):.3f} ms | "
+        f"detect_objects {timing.get('xe', 0):.3f} ms | "
         f"bien {timing.get('bien', 0):.3f} ms | "
         f"track {timing.get('track', 0):.3f} ms | "
+        f"person_track {timing.get('person_track', 0):.3f} ms | "
         f"{ocr_timing} | ocr_crops={timing.get('ocr_crops', 'n/a')} | "
         f"tong {timing.get('tong', 0):.3f} ms"
     )
     parts = []
     for track_id, row in frame_results.items():
-        if track_id in ("__plates__", "__timing__"):
+        if track_id in ("__plates__", "__timing__", "__persons__"):
             continue
         shown = row.get("plate_text") or "-"
         ocr_text = row.get("ocr_text") or "-"
@@ -58,6 +59,8 @@ def _write_frame_log(log_file, frame_nmr, frame_results):
             f"track {track_id} hien={shown} ocr={ocr_text} "
             f"conf={confidence_text} valid={row.get('valid')} source={row.get('source')}"
         )
+    for person_id, row in frame_results.get("__persons__", {}).items():
+        parts.append(f"person P:{person_id} bbox={row['person_bbox']}")
     detail = " | ".join(parts) if parts else "khong co xe"
     log_file.write(f"frame {frame_nmr} | {timing_text} | {detail}\n")
     log_file.flush()
@@ -79,6 +82,11 @@ def _write_ocr_summary(log_file, worker):
 
 def main(config_path=r"D:\license_plate_data\config\config.yaml", display=None):
     cfg = load_config(config_path)
+    tracking_cfg = cfg['tracking']
+    if tracking_cfg.get('type', 'bytetrack') != 'bytetrack':
+        raise ValueError('This pipeline uses tracking.type: bytetrack')
+    if cfg['detection']['vehicle_conf_threshold'] > tracking_cfg.get('track_low_thresh', 0.1):
+        raise ValueError('vehicle_conf_threshold must be <= track_low_thresh for ByteTrack')
     gui_available = any(
         line.strip().startswith('GUI:') and 'NONE' not in line
         for line in cv2.getBuildInformation().splitlines())
@@ -96,7 +104,7 @@ def main(config_path=r"D:\license_plate_data\config\config.yaml", display=None):
         track_cache.mark_snapshot_saved(track_id)
 
 
-    vehicle_detector = VehicleDetection(
+    vehicle_detector = ObjectDetector(
         model_path=_project_path(config_path, cfg['models']['vehicle_detector']),
         conf_threshold=cfg['detection']['vehicle_conf_threshold'])
 
@@ -106,10 +114,21 @@ def main(config_path=r"D:\license_plate_data\config\config.yaml", display=None):
         min_ratio=cfg['detection']['plate_min_ratio'],
         max_ratio=cfg['detection']['plate_max_ratio'])
     
-    tracker = VehicleTracker(
-        max_age=cfg['tracking']['max_age'],
-        n_init=cfg['tracking']['n_init'],
-        embedder=cfg['tracking']['embedder'])
+    tracker = ObjectTracker(
+        track_high_thresh=tracking_cfg.get('track_high_thresh', 0.25),
+        track_low_thresh=tracking_cfg.get('track_low_thresh', 0.1),
+        new_track_thresh=tracking_cfg.get('new_track_thresh', 0.25),
+        track_buffer=tracking_cfg.get('track_buffer', 30),
+        match_thresh=tracking_cfg.get('match_thresh', 0.8),
+        fuse_score=tracking_cfg.get('fuse_score', True))
+    
+    person_tracker = ObjectTracker(
+        track_high_thresh=tracking_cfg.get('track_high_thresh', 0.25),
+        track_low_thresh=tracking_cfg.get('track_low_thresh', 0.1),
+        new_track_thresh=tracking_cfg.get('new_track_thresh', 0.25),
+        track_buffer=tracking_cfg.get('track_buffer', 30),
+        match_thresh=tracking_cfg.get('match_thresh', 0.8),
+        fuse_score=tracking_cfg.get('fuse_score', True))
     
     ocr_engine = PlateOCR(
         onnx_model_path=_project_path(config_path, cfg['ocr']['onnx_model_path']),
@@ -144,7 +163,8 @@ def main(config_path=r"D:\license_plate_data\config\config.yaml", display=None):
         tracker=tracker,
         ocr_engine=ocr_engine,
         track_cache=track_cache,
-        snapshot_writer=snapshot_writer)
+        snapshot_writer=snapshot_writer,
+        person_tracker=person_tracker)
     
     output_path = _project_path(
         config_path, cfg['video'].get('output', 'output/anpr_output.mp4'))
@@ -212,6 +232,10 @@ def main(config_path=r"D:\license_plate_data\config\config.yaml", display=None):
         if log_file is not None:
             if not worker.is_alive():
                 _write_ocr_summary(log_file, worker)
+            log_file.write(
+                f'snapshot_summary | saved={snapshot_writer.saved_count} '
+                f'failed={snapshot_writer.failed_count} dropped={snapshot_writer.dropped_count} '
+                f'callback_errors={snapshot_writer.callback_error_count}\n')
             log_file.close()
         if display:
             cv2.destroyAllWindows()
@@ -223,7 +247,11 @@ def main(config_path=r"D:\license_plate_data\config\config.yaml", display=None):
     return {"processed_frames": processed_frames, "source_frames": reader.frames_read,
             "completed": reached_end, "output": output_path, "log": log_path,
             "ocr_calls": worker.ocr_call_count, "ocr_crops": worker.ocr_crop_count,
-            "ocr_total_ms": worker.ocr_total_ms}
+            "ocr_total_ms": worker.ocr_total_ms,
+            "snapshot_saved": snapshot_writer.saved_count,
+            "snapshot_failed": snapshot_writer.failed_count,
+            "snapshot_dropped": snapshot_writer.dropped_count,
+            "snapshot_callback_errors": snapshot_writer.callback_error_count}
     
 if __name__ == "__main__":
     import argparse

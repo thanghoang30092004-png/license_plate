@@ -39,3 +39,10 @@ env/
 Thumbs.db
 .DS_Store
 /tests/
+!/tests/
+/tests/*
+!/tests/bench_plate_roi_batch.py
+!/tests/test_bytetrack_pipeline.py
+!/tests/test_snapshot_worker.py
+!/tests/test_snapshot_saver.py
+!/tests/validate_bytetrack.py

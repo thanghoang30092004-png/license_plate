@@ -2,7 +2,7 @@ from ultralytics import YOLO
 import cv2
 import numpy as np 
 
-class VehicleDetection:
+class ObjectDetector:
     VEHICLE_CLASSES = [2, 3, 5, 7]
     def __init__(self, model_path, conf_threshold = 0.3, iou_threshold = 0.4, device = "cuda"):
         self.model= YOLO(model_path)
@@ -12,13 +12,22 @@ class VehicleDetection:
     
 
     def detect(self, frame):
+        # Compatibility for callers that only need vehicles.
+        return self.detect_objects(frame)["vehicles"]
+
+    def detect_objects(self, frame):
+        """One inference, separate COCO vehicle and person detections."""
         results = self.model(frame, device=self.device, conf=self.conf_threshold,
                              iou=self.iou_threshold, verbose=False)
-        detections = []
+        groups = {"vehicles": [], "persons": []}
         for x1, y1, x2, y2, conf, class_id in _box_rows(results):
-            if int(class_id) in self.VEHICLE_CLASSES:
-                detections.append((x1, y1, x2, y2, conf, class_id))
-        return detections
+            class_id = int(class_id)
+            row = (x1, y1, x2, y2, conf, class_id)
+            if class_id in self.VEHICLE_CLASSES:
+                groups["vehicles"].append(row)
+            elif class_id == 0:
+                groups["persons"].append(row)
+        return groups
 
 
 def _box_rows(results):

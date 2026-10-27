@@ -124,8 +124,8 @@ class TrackCache:
     def mark_snapshot_saved(self, track_id):
         """Đánh dấu track này đã lưu ảnh snapshot (ảnh crop biển số) rồi."""
         entry = self._cache.get(track_id)
-        if track_id in self._cache:
-            self._cache[track_id]['snapshot_saved'] = True
+        if entry is not None:
+            entry['snapshot_saved'] = True
 
 
 
@@ -135,6 +135,13 @@ class TrackCache:
         if entry is None:
             return None
         return entry['confirmed_text']
+
+    def retain_tracks(self, retained_track_ids):
+        """ByteTrack owns expiry: keep Tracked/Lost; drop IDs it has removed."""
+        retained = set(retained_track_ids)
+        for track_id in list(self._cache):
+            if track_id not in retained:
+                del self._cache[track_id]
 
     def cleanup(self, active_track_ids):
         """Xóa cache của track vắng mặt đủ absent_grace frame."""

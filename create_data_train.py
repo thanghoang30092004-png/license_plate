@@ -21,9 +21,7 @@ def extract(video_path, out_dir, every_n=5, blur_thresh=50.0):
     print(f"{video_path}: {saved} frame đã lưu / {idx} frame tổng")
 
 if __name__ == "__main__":
-    videos = [
-        r"D:\license_plate_data\data\Camera Nhìn Bảng Số Xe Vào Ban Đêm - 0938112399.mp4",
-        r"D:\license_plate_data\data\Camera Đọc Biển Số Xe, Giải pháp camera nhìn biển số xe của nhà imou.mp4",
-    ]
+    videos = [r"D:\license_plate_data\data\cam_20250922_181322.mp4"]
+       
     for v in videos:
         extract(v, "frames", every_n=6)

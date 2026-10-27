@@ -11,11 +11,16 @@ def draw_results(frame, frame_results):
         cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 255), 2)
 
     for track_id, result in frame_results.items():
-        if track_id in ("__plates__", "__timing__"):
+        if track_id in ("__plates__", "__timing__", "__persons__"):
             continue
         x1, y1, x2, y2 = map(int, result['vehicle_bbox'])
         cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
         text = result.get('plate_text') or ''
-        cv2.putText(frame, f"ID:{track_id} {text}", (x1, max(y1 - 10, 0)),
+        cv2.putText(frame, f"V:{track_id} {text}", (x1, max(y1 - 10, 0)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+    for person_id, result in frame_results.get("__persons__", {}).items():
+        x1, y1, x2, y2 = map(int, result["person_bbox"])
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 128, 0), 2)
+        cv2.putText(frame, f"P:{person_id}", (x1, max(y1 - 10, 0)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 128, 0), 2)
     return frame
